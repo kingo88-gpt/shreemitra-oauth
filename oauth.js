@@ -1,44 +1,38 @@
 import { writeFile } from 'fs/promises';
 import path from 'path';
-import { exec } from 'child_process';
+import axios from 'axios';
 
 export default async function handler(req, res) {
+  const { code, instanceId } = req.query;
+
+  if (!code || !instanceId) {
+    return res.status(400).json({ error: "Missing code or instanceId" });
+  }
+
+  const clientId = process.env.WIX_CLIENT_ID;
+  const clientSecret = process.env.WIX_CLIENT_SECRET;
+
+  const formData = `grant_type=authorization_code&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}&code=${encodeURIComponent(code)}`;
+
   try {
-    const { code, instanceId } = req.query;
-
-    if (!code || !instanceId) {
-      return res.status(400).json({ error: "Missing code or instanceId" });
-    }
-
-    const clientId = encodeURIComponent(process.env.WIX_CLIENT_ID);
-    const clientSecret = encodeURIComponent(process.env.WIX_CLIENT_SECRET);
-    const encodedCode = encodeURIComponent(code);
-
-    const curlCommand = `
-      curl -s -X POST https://www.wix.com/oauth/access \
-      -H "Content-Type: application/x-www-form-urlencoded" \
-      -d "grant_type=authorization_code&client_id=${clientId}&client_secret=${clientSecret}&code=${encodedCode}"
-    `.trim();
-
-    const output = await new Promise((resolve, reject) => {
-      exec(curlCommand, (error, stdout, stderr) => {
-        if (error) return reject(stderr || error.message);
-        resolve(stdout);
-      });
+    const response = await axios.post("https://www.wix.com/oauth/access", formData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': '*/*'
+      },
+      transformRequest: [(data) => data], // prevents axios from auto-formatting
+      validateStatus: () => true
     });
 
-    const parsed = JSON.parse(output);
-
-    if (!parsed.access_token) {
-      return res.status(500).json({ error: "Token exchange failed", details: parsed });
+    if (!response.data.access_token) {
+      return res.status(500).json({ error: "Token exchange failed", details: response.data });
     }
 
-    parsed.instanceId = instanceId;
-    parsed.fetchedAt = Date.now();
+    const token = response.data;
+    token.instanceId = instanceId;
+    token.fetchedAt = Date.now();
 
-    const filepath = path.resolve("/tmp/tokens.json");
-    await writeFile(filepath, JSON.stringify(parsed, null, 2));
-
+    await writeFile("/tmp/tokens.json", JSON.stringify(token, null, 2));
     return res.status(200).send(`
       <html><head><title>App Installed</title></head>
       <body style="font-family: sans-serif; text-align: center; padding: 40px;">
@@ -46,7 +40,8 @@ export default async function handler(req, res) {
         <p>You may now close this tab.</p>
       </body></html>
     `);
-  } catch (err) {
-    return res.status(500).json({ error: "OAuth failed", details: err.toString() });
+  } catch (error) {
+    console.error("🔥 Axios Token Exchange Error:", error.message);
+    return res.status(500).json({ error: "OAuth failed", details: error.message });
   }
 }
